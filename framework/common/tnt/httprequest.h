@@ -41,7 +41,7 @@
 #include <tnt/scope.h>
 #include <tnt/threadcontext.h>
 #include <locale>
-#include <vector>
+#include <map>
 #include <cxxtools/atomicity.h>
 #include <string>
 #include <cstring>
@@ -60,7 +60,7 @@ namespace tnt
       friend class SessionUnlocker;
       friend class ApplicationUnlocker;
 
-      typedef std::vector<std::string> args_type;
+      typedef std::map<std::string, std::string> args_type;
 
     private:
       std::string body;
@@ -70,10 +70,11 @@ namespace tnt
       std::string queryString;
 
       size_t contentSize;
-      static size_t maxRequestSize;
 
       std::string pathinfo;
       args_type args;
+      tnt::QueryParams getparam;
+      tnt::QueryParams postparam;
       tnt::QueryParams qparam;
 
       const SocketIf* socketIf;
@@ -95,10 +96,12 @@ namespace tnt
       Scope* requestScope;
       Scope* applicationScope;
       Sessionscope* sessionScope;
+      Sessionscope* secureSessionScope;
       ThreadContext* threadContext;
 
       bool applicationScopeLocked;
       bool sessionScopeLocked;
+      bool secureSessionScopeLocked;
 
       void ensureApplicationScopeLock();
       void ensureSessionScopeLock();
@@ -155,19 +158,22 @@ namespace tnt
       const args_type& getArgs() const             { return args; }
       args_type& getArgs()                         { return args; }
 
-      std::string getArgDef(args_type::size_type n,
-        const std::string& def = std::string()) const
-        { return args.size() > n ? args[n] : def; }
-      const std::string& getArg(args_type::size_type n) const
-        { return args[n]; }
-      std::string getArg(const std::string& name, const std::string& def = std::string()) const;
+      /// @deprecated
+      std::string getArgDef(args_type::size_type n, const std::string& def = std::string()) const;
+      /// @deprecated
+      std::string getArg(args_type::size_type n) const { return getArgDef(n); }
+      /// @deprecated
       args_type::size_type getArgsCount() const    { return args.size(); }
+
+      std::string getArg(const std::string& name, const std::string& def = std::string()) const;
 
       void parse(std::istream& in);
       void doPostParse();
 
       tnt::QueryParams& getQueryParams()               { return qparam; }
       const tnt::QueryParams& getQueryParams() const   { return qparam; }
+      const tnt::QueryParams& getGetParams() const     { return getparam; }
+      const tnt::QueryParams& getPostParams() const    { return postparam; }
       void setQueryParams(const tnt::QueryParams& q)   { qparam = q; }
 
       std::string getPeerIp() const    { return socketIf ? socketIf->getPeerIp()   : std::string(); }
@@ -218,6 +224,8 @@ namespace tnt
 
       void setSessionScope(Sessionscope* s);
       void setSessionScope(Sessionscope& s)      { setSessionScope(&s); }
+      void setSecureSessionScope(Sessionscope* s);
+      void setSecureSessionScope(Sessionscope& s)      { setSecureSessionScope(&s); }
       void clearSession();
 
       void setThreadContext(ThreadContext* ctx)    { threadContext = ctx; }
@@ -226,7 +234,9 @@ namespace tnt
       Scope& getApplicationScope();
       Scope& getThreadScope();
       Sessionscope& getSessionScope();
+      Sessionscope& getSecureSessionScope();
       bool   hasSessionScope() const;
+      bool   hasSecureSessionScope() const;
 
       /// returns the value of the content-size-header as read from the client.
       size_t getContentSize() const
@@ -242,9 +252,7 @@ namespace tnt
       /// rewind watchdog timer.
       void touch()                               { threadContext->touch(); }
 
-      /// Sets a limit for a maximum request size.
-      static void setMaxRequestSize(size_t s)    { maxRequestSize = s; }
-      static size_t getMaxRequestSize()          { return maxRequestSize; }
+      static void postRunCleanup();
   };
 
   inline std::istream& operator>> (std::istream& in, HttpRequest& msg)

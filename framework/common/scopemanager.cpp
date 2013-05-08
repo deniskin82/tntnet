@@ -40,6 +40,18 @@ log_define("tntnet.scopemanager")
 
 namespace tnt
 {
+  ScopeManager::ScopeManager()
+  {
+  }
+
+  ScopeManager::~ScopeManager()
+  {
+    for (sessionscopes_type::iterator it = sessionScopes.begin(); it != sessionScopes.end(); ++it)
+      delete it->second;
+    for (scopes_type::iterator it = applicationScopes.begin(); it != applicationScopes.end(); ++it)
+      delete it->second;
+  }
+
   Scope* ScopeManager::getApplicationScope(const std::string& appname)
   {
     cxxtools::MutexLock lock(applicationScopesMutex);
@@ -92,7 +104,8 @@ namespace tnt
     sessionscopes_type::iterator it = sessionScopes.find(sessioncookie);
     if (it != sessionScopes.end())
     {
-      it->second->release();
+      if (it->second->release() == 0)
+        delete it->second;
       it->second = s;
     }
     else
@@ -106,7 +119,8 @@ namespace tnt
     scopes_type::iterator it = applicationScopes.find(appname);
     if (it != applicationScopes.end())
     {
-      it->second->release();
+      if (it->second->release() == 0)
+        delete it->second;
       applicationScopes.erase(it);
     }
   }
@@ -117,7 +131,8 @@ namespace tnt
     sessionscopes_type::iterator it = sessionScopes.find(sessioncookie);
     if (it != sessionScopes.end())
     {
-      it->second->release();
+      if (it->second->release() == 0)
+        delete it->second;
       sessionScopes.erase(it);
     }
   }
@@ -126,6 +141,8 @@ namespace tnt
   {
     // check session-cookie
     std::string currentSessionCookieName = app.empty() ? std::string("tntnet") : "tntnet." + app;
+    std::string currentSecureSessionCookieName = app.empty() ? std::string("stntnet") : "stntnet." + app;
+
     Cookie c = request.getCookie(currentSessionCookieName);
     if (c.getValue().empty())
     {
@@ -136,11 +153,11 @@ namespace tnt
         log_debug("available session " << it->first << " value " << it->second);
         */
 
-      log_debug("session-cookie " << currentSessionCookieName << " not found - keep session");
+      log_debug("session cookie " << currentSessionCookieName << " not found - keep session");
     }
     else
     {
-      log_debug("session-cookie " << currentSessionCookieName << " found: " << c.getValue());
+      log_debug("session cookie " << currentSessionCookieName << " found: " << c.getValue());
 
       cxxtools::MutexLock lock(sessionScopesMutex);
 
@@ -162,6 +179,47 @@ namespace tnt
       }
 
       request.setSessionScope(sessionScope);
+    }
+
+    if (request.isSsl())
+    {
+      c = request.getCookie(currentSecureSessionCookieName);
+      if (c.getValue().empty())
+      {
+        log_debug("secure session cookie " << currentSessionCookieName
+            << " not found - keep session");
+      }
+      else if (request.isSsl())
+      {
+        log_debug("secure session cookie " << currentSessionCookieName
+            << " found: " << c.getValue());
+
+        cxxtools::MutexLock lock(sessionScopesMutex);
+
+        Sessionscope* sessionScope;
+
+        sessionscopes_type::iterator it = sessionScopes.find(c.getValue());
+        if (it == sessionScopes.end())
+        {
+          log_debug("session not found - create new");
+          sessionScope = new Sessionscope();
+          sessionScope->addRef();
+          sessionScopes.insert(sessionscopes_type::value_type(c.getValue(), sessionScope));
+        }
+        else
+        {
+          log_debug("session found");
+          sessionScope = it->second;
+          sessionScope->touch();
+        }
+
+        request.setSecureSessionScope(sessionScope);
+      }
+    }
+    else
+    {
+      log_debug("secure session cookie " << currentSessionCookieName
+          << " not checked in non ssl request");
     }
 
     // set application-scope
@@ -188,42 +246,70 @@ namespace tnt
   std::string ScopeManager::postCall(HttpRequest& request, HttpReply& reply, const std::string& app)
   {
     std::string currentSessionCookieName = app.empty() ? std::string("tntnet") : "tntnet." + app;
+    std::string currentSecureSessionCookieName = app.empty() ? std::string("stntnet") : "stntnet." + app;
 
     std::string sessionId;
 
-    if (request.hasSessionScope())
-    {
-      // request has session-scope
-      sessionId = request.getCookie(currentSessionCookieName);
-      if (sessionId.empty())
-      {
-        // client has no sessionId
-
-        cxxtools::Md5stream c;
-        c << request.getSerial() << '-' << ::pthread_self() << '-' << rand();
-        sessionId = c.getHexDigest();
-        log_info("create new session " << sessionId);
-        reply.setCookie(currentSessionCookieName, sessionId);
-        putSessionScope(sessionId, &request.getSessionScope());
-      }
-      else if (!hasSessionScope(sessionId))
-      {
-        // client has a sessionId but no associated session
-        // this may happen, when tntnet is restarted while the browser has a session
-
-        putSessionScope(sessionId, &request.getSessionScope());
-      }
-    }
-    else
+    if (reply.isClearSession())
     {
       sessionId = request.getCookie(currentSessionCookieName);
       if (!sessionId.empty())
-      {
-        // client has sessionId
-        log_debug("clear Cookie " << currentSessionCookieName);
-        reply.clearCookie(currentSessionCookieName);
         removeSessionScope(sessionId);
-        sessionId.clear();
+
+      std::string secureSessionId = request.getCookie(currentSecureSessionCookieName);
+      if (!secureSessionId.empty())
+        removeSessionScope(secureSessionId);
+    }
+    else
+    {
+      if (request.hasSessionScope())
+      {
+        // request has session scope
+        sessionId = request.getCookie(currentSessionCookieName);
+        if (sessionId.empty())
+        {
+          // client has no sessionId
+
+          cxxtools::Md5stream c;
+          c << request.getSerial() << '-' << ::pthread_self() << '-' << rand();
+          sessionId = c.getHexDigest();
+          log_info("create new session " << sessionId);
+          reply.setCookie(currentSessionCookieName, sessionId);
+          putSessionScope(sessionId, &request.getSessionScope());
+        }
+        else if (!hasSessionScope(sessionId))
+        {
+          // client has a sessionId but no associated session
+          // this may happen, when tntnet is restarted while the browser has a session
+
+          putSessionScope(sessionId, &request.getSessionScope());
+        }
+      }
+
+      if (request.isSsl() && request.hasSecureSessionScope())
+      {
+        // request has secure session scope
+        std::string sessionId = request.getCookie(currentSecureSessionCookieName);
+        if (sessionId.empty())
+        {
+          // client has no sessionId
+
+          cxxtools::Md5stream c;
+          c << request.getSerial() << '-' << ::pthread_self() << '-' << rand();
+          sessionId = c.getHexDigest();
+          log_info("create new secure session " << sessionId);
+          tnt::Cookie cookie(sessionId);
+          cookie.setSecure();
+          reply.setCookie(currentSecureSessionCookieName, cookie);
+          putSessionScope(sessionId, &request.getSecureSessionScope());
+        }
+        else if (!hasSessionScope(sessionId))
+        {
+          // client has a sessionId but no associated session
+          // this may happen, when tntnet is restarted while the browser has a session
+
+          putSessionScope(sessionId, &request.getSecureSessionScope());
+        }
       }
     }
 
@@ -245,7 +331,8 @@ namespace tnt
         log_info("sessiontimeout for session " << it->first << " reached");
         sessionscopes_type::iterator it2 = it;
         ++it;
-        s->release();
+        if (s->release() == 0)
+          delete s;
         sessionScopes.erase(it2);
         ++count;
       }

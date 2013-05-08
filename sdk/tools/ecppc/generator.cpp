@@ -210,6 +210,18 @@ namespace tnt
       currentComp->addArg(name, value);
     }
 
+    void Generator::onGet(const std::string& name,
+      const std::string& value)
+    {
+      currentComp->addGet(name, value);
+    }
+
+    void Generator::onPost(const std::string& name,
+      const std::string& value)
+    {
+      currentComp->addPost(name, value);
+    }
+
     void Generator::onAttr(const std::string& name,
       const std::string& value)
     {
@@ -417,14 +429,14 @@ namespace tnt
                 "      { }\n"
                 "    tnt::Component* doCreate(const tnt::Compident& ci,\n"
                 "      const tnt::Urlmapper& um, tnt::Comploader& cl);\n"
-                "    virtual void doConfigure(const tnt::Tntconfig& config);\n"
+                "    virtual void doConfigure(const tnt::TntConfig& config);\n"
                 "};\n\n"
                 "tnt::Component* _component_Factory::doCreate(const tnt::Compident& ci,\n"
                 "  const tnt::Urlmapper& um, tnt::Comploader& cl)\n"
                 "{\n"
                 "  return new _component_(ci, um, cl);\n"
                 "}\n\n"
-                "void _component_Factory::doConfigure(const tnt::Tntconfig& config)\n"
+                "void _component_Factory::doConfigure(const tnt::TntConfig& config)\n"
                 "{\n"
                 "  // <%config>\n";
         for (variable_declarations::const_iterator it = configs.begin();

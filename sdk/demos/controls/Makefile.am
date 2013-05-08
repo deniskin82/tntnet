@@ -31,15 +31,14 @@ EXTRA_DIST = \
 	treeview.ecpp \
 	minus.png \
 	plus.png \
-	tntnet.conf
+	tntnet.xml
 
 AM_CPPFLAGS = -I$(top_srcdir)/framework/common
-AM_CXXFLAGS = $(PTHREAD_CFLAGS)
 controls_la_LDFLAGS = -module @SHARED_LIB_FLAG@
-controls_la_LIBADD = $(top_builddir)/framework/common/libtntnet.la $(PTHREAD_LIBS)
+controls_la_LIBADD = $(top_builddir)/framework/common/libtntnet.la
 
-noinst_DATA = tntnet.conf tntnet.properties
-CLEANFILES = tntnet.properties \
+noinst_DATA = tntnet.xml
+CLEANFILES = \
 	controls.cpp \
 	index.cpp \
 	treemenu.cpp \
@@ -65,5 +64,5 @@ SUFFIXES=.ecpp .png .css .cpp
 .css.cpp:
 	$(ECPPC) -b -m text/css -o $@ $<
 
-tntnet.properties:
-	$(SHELL) $(top_builddir)/tntnet-config --properties controls >$@
+tntnet.xml:
+	$(SHELL) $(top_builddir)/tntnet-config --config=controls|$(AWK) '/<\/tntnet>/{print "  <compPath>\n    <entry>.libs</entry>\n  </compPath>"} {print}' >$@

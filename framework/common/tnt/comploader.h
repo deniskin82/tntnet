@@ -43,7 +43,6 @@ namespace tnt
 {
   class Comploader;
   class ComponentFactory;
-  class Tntconfig;
 
   /// @internal
   class LibraryNotFound
@@ -61,7 +60,10 @@ namespace tnt
   {
     protected:
       void destroy(objectType* ptr)
-      { ::dlclose(*ptr); }
+      {
+        ::dlclose(*ptr);
+        delete ptr;
+      }
   };
 
   class ComponentLibrary
@@ -111,15 +113,12 @@ namespace tnt
   {
       typedef std::map<std::string, ComponentLibrary> librarymap_type;
       typedef std::map<Compident, Component*> componentmap_type;
-      typedef std::list<std::string> search_path_type;
 
       // loaded libraries
       static librarymap_type& getLibrarymap();
 
       // map soname/compname to compinstance
       componentmap_type componentmap;
-      static const Tntconfig* config;
-      static search_path_type search_path;
       static ComponentLibrary::factoryMapType* currentFactoryMap;
 
     public:
@@ -132,11 +131,7 @@ namespace tnt
       // lookup library; load if needed
       ComponentLibrary& fetchLib(const std::string& libname);
 
-      static const Tntconfig& getConfig()        { return *config; }
-      static void configure(const Tntconfig& config);
       static void registerFactory(const std::string& component_name, ComponentFactory* factory);
-      static void addSearchPathEntry(const std::string& path)
-        { search_path.push_back(path); }
   };
 }
 

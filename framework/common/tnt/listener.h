@@ -48,7 +48,8 @@ namespace tnt
           { }
       virtual ~ListenerBase() { }
 
-      void doStop();
+      void terminate();
+      virtual void doTerminate() = 0;
       virtual void initialize();
 
       const std::string& getIpaddr() const
@@ -61,17 +62,12 @@ namespace tnt
   {
       cxxtools::net::TcpServer server;
       Jobqueue& queue;
-      static int backlog;
-      static unsigned listenRetry;
 
     public:
       Listener(Tntnet& application, const std::string& ipaddr, unsigned short int port, Jobqueue& q);
 
+      virtual void doTerminate();
       virtual void initialize();
-      static void setBacklog(int backlog_)   { backlog = backlog_; }
-      static int getBacklog()                { return backlog; }
-      static void setListenRetry(unsigned listenRetry_)   { listenRetry = listenRetry_; }
-      static unsigned getListenRetry()                { return listenRetry; }
   };
 
 #ifdef USE_SSL
@@ -84,6 +80,7 @@ namespace tnt
       Ssllistener(Tntnet& application, const char* certificateFile, const char* keyFile,
           const std::string& ipaddr, unsigned short int port, Jobqueue& q);
 
+      virtual void doTerminate();
       virtual void initialize();
   };
 #endif // USE_SSL

@@ -13,21 +13,18 @@ EXTRA_DIST = \
 	extcomp.ecpp
 
 AM_CPPFLAGS = -I$(top_srcdir)/framework/common
-AM_CXXFLAGS = $(PTHREAD_CFLAGS)
 comp_la_LDFLAGS = -module @SHARED_LIB_FLAG@
-comp_la_LIBADD = $(top_builddir)/framework/common/libtntnet.la $(PTHREAD_LIBS)
+comp_la_LIBADD = $(top_builddir)/framework/common/libtntnet.la
 extlib_la_LDFLAGS = -module
-extlib_la_LIBADD = $(top_builddir)/framework/common/libtntnet.la $(PTHREAD_LIBS)
+extlib_la_LIBADD = $(top_builddir)/framework/common/libtntnet.la
 
-noinst_DATA = tntnet.conf tntnet.properties
+noinst_DATA = tntnet.xml
 CLEANFILES = comp.cpp subcomp.cpp extcomp.cpp \
-    tntnet.conf tntnet.properties
+    tntnet.xml
 
 SUFFIXES=.ecpp .cpp
 .ecpp.cpp:
 	$(top_builddir)/sdk/tools/ecppc/ecppc -o $@ $<
 
-tntnet.properties:
-	$(SHELL) $(top_builddir)/tntnet-config --properties comp >$@
-tntnet.conf:
-	( $(SHELL) $(top_builddir)/tntnet-config --config=comp; echo CompPath .libs ) >$@
+tntnet.xml:
+	$(SHELL) $(top_builddir)/tntnet-config --config=comp|$(AWK) '/<\/tntnet>/{print "  <compPath>\n    <entry>.libs</entry>\n  </compPath>"} {print}' >$@

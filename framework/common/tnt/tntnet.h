@@ -43,7 +43,7 @@
 namespace tnt
 {
   class ListenerBase;
-  class Tntconfig;
+  struct TntConfig;
 
   /**
    @brief Main application class for stand alone webapplication.
@@ -64,8 +64,6 @@ namespace tnt
 
       unsigned minthreads;
       unsigned maxthreads;
-      unsigned long threadstartdelay;
-      unsigned timersleep;
 
       Jobqueue queue;
 
@@ -97,16 +95,24 @@ namespace tnt
       /// Initialize a default Tntnet-application without mappings.
       Tntnet();
 
-      /// Read settings from a Tntconfig object.
-      void init(const Tntconfig& config);
+      /// Initialize from global configuration
+      void init(const TntConfig& config);
       /// Set up a listener on the specified ip address and port.
       /// Listening on the port does not actually happen here but when the
       /// application is started using the run-method.
       void listen(const std::string& ipaddr, unsigned short int port);
+      /// Listen on all local interfaces on the specified port.
+      void listen(unsigned short int port)
+      { listen(std::string(), port); }
+
       /// Set up a ssl listener on the specified ip address and port.
       /// Listening on the port does not actually happen here but when the
       /// application is started using the run-method.
       void sslListen(const std::string& certificateFile, const std::string& keyFile, const std::string& ipaddr, unsigned short int port);
+      /// Listen on all local interfaces on the specified port for ssl requests.
+      void sslListen(const std::string& certificateFile, const std::string& keyFile, unsigned short int port)
+      { sslListen(certificateFile, keyFile, std::string(), port); }
+
       /// Starts all needed threads and the application loop.
       /// If no listeners are set up using listen or sslListen, a default
       /// listener is instantiated. By default it listens on the ip address
@@ -138,25 +144,10 @@ namespace tnt
       /// Sets the maximum number of worker threads.
       void setMaxThreads(unsigned n)          { maxthreads = n; }
 
-      /// Returns the time in seconds after which cleanup like checking sessiontimeout is done.
-      unsigned getTimersleep() const          { return timersleep; }
-      /// Sets the time in seconds after which cleanup like checking sessiontimeout is done.
-      void setTimersleep(unsigned sec)        { timersleep = sec; }
-
-      /// Returns the time in seconds between thread starts.
-      unsigned getThreadStartDelay() const    { return threadstartdelay; }
-      /// Sets the time in seconds between thread starts.
-      void setThreadStartDelay(unsigned sec)  { threadstartdelay = sec; }
-
-      /// Returns the maximum number of jobs waiting for processing.
-      unsigned getQueueSize() const           { return queue.getCapacity(); }
-      /// Sets the maximum number of jobs waiting for processing.
-      void setQueueSize(unsigned n)           { queue.setCapacity(n); }
-
       /// Adds a mapping from a url to a component.
       /// The url is specified using a regular expression and the mapped target
       /// may contain back references to the expression using $1, $2, ... .
-      Maptarget& mapUrl(const std::string& url, const std::string& ci)
+      Mapping& mapUrl(const std::string& url, const std::string& ci)
         { return dispatcher.addUrlMapEntry(std::string(), url, Maptarget(ci)); }
       void mapUrl(const std::string& url, const std::string& pathinfo, const std::string& ci_)
       {
@@ -164,9 +155,9 @@ namespace tnt
         ci.setPathInfo(pathinfo);
         dispatcher.addUrlMapEntry(std::string(), url, ci);
       }
-      Maptarget& mapUrl(const std::string& url, const Maptarget& ci)
+      Mapping& mapUrl(const std::string& url, const Maptarget& ci)
         { return dispatcher.addUrlMapEntry(std::string(), url, ci); }
-      Maptarget& vMapUrl(const std::string& vhost, const std::string& url, const Maptarget& ci)
+      Mapping& vMapUrl(const std::string& vhost, const std::string& url, const Maptarget& ci)
         { return dispatcher.addUrlMapEntry(vhost, url, ci); }
 
       /** Set the app name.

@@ -33,43 +33,73 @@
 #include <cxxtools/mutex.h>
 #include <tnt/urlmapper.h>
 #include <tnt/maptarget.h>
+#include <tnt/tntconfig.h>
 #include <vector>
 #include <map>
 #include <cxxtools/regex.h>
 
 namespace tnt
 {
+  class HttpRequest;
+
+  class Mapping
+  {
+    private:
+      std::string vhost;
+      std::string url;
+      std::string method;
+      int ssl;
+
+      cxxtools::Regex r_vhost;
+      cxxtools::Regex r_url;
+      cxxtools::Regex r_method;
+
+      Maptarget target;
+
+    public:
+      typedef Maptarget::args_type args_type;
+
+      Mapping() { }
+
+      Mapping(const std::string& vhost_, const std::string& url_,
+          const std::string& method_, int ssl_, const Maptarget& target_);
+
+      const std::string& getVHost() const   { return vhost; }
+      const std::string& getUrl() const     { return url; }
+      const std::string& getMethod() const  { return method; }
+      int getSsl() const                    { return ssl; }
+
+      const Maptarget& getTarget() const    { return target; }
+
+      Mapping& setPathInfo(const std::string& p)
+        { target.setPathInfo(p); return *this; }
+
+      Mapping& setArgs(const args_type& a)
+        { target.setArgs(a); return *this; }
+
+      Mapping& setVHost(const std::string& vhost_)
+        { vhost = vhost_; r_vhost = cxxtools::Regex(vhost_); return *this; }
+
+      Mapping& setUrl(const std::string& url_)
+        { url = url_; r_url = cxxtools::Regex(url_); return *this; }
+
+      Mapping& setMethod(const std::string& method_)
+        { method = method_; r_method = cxxtools::Regex(method_); return *this; }
+
+      Mapping& setSsl(bool sw)
+        { ssl = (sw ? SSL_YES : SSL_NO); return *this; }
+
+      Mapping& unsetSsl()
+        { ssl = SSL_ALL; return *this; }
+
+      bool match(const HttpRequest& request, cxxtools::RegexSMatch& smatch) const;
+
+  };
+
   // Dispatcher - one per host
   class Dispatcher : public Urlmapper
   {
-    public:
-      typedef Maptarget CompidentType;
-
-    private:
-      class VHostRegex
-      {
-          std::string vhost;
-          std::string regexstr;
-          cxxtools::Regex regex;
-
-        public:
-          VHostRegex(const std::string& vhost_, const std::string& regex_)
-            : vhost(vhost_),
-              regexstr(regex_),
-              regex(regex_)
-              { }
-
-          bool match(const std::string& vhost_, const std::string& str_,
-            cxxtools::RegexSMatch& smatch, int eflags = 0) const
-          {
-            return (vhost.empty() || cxxtools::Regex(vhost).match(vhost_))
-                && regex.match(str_, smatch);
-          }
-
-          const std::string& getRegex() const  { return regexstr; }
-      };
-
-      typedef std::vector<std::pair<VHostRegex, CompidentType> > urlmap_type;
+      typedef std::vector<Mapping> urlmap_type;
       urlmap_type urlmap;   // map url to soname/compname
       mutable cxxtools::ReadWriteMutex mutex;
 
@@ -77,36 +107,30 @@ namespace tnt
       {
           std::string vhost;
           std::string url;
-          urlmap_type::const_iterator pos;
+          std::string method;
+          bool ssl;
+          urlmap_type::size_type pos;
 
         public:
           UrlMapCacheKey() { }
-          UrlMapCacheKey(const std::string& vhost_, const std::string& url_,
-              urlmap_type::const_iterator pos_)
-            : vhost(vhost_),
-              url(url_),
-              pos(pos_)
-              { }
+          UrlMapCacheKey(const HttpRequest& request, urlmap_type::size_type pos_);
 
-          bool operator< (const UrlMapCacheKey& other) const
-          {
-            int c = url.compare(other.url);
-            if (c != 0)
-              return c < 0;
-            c = vhost.compare(other.vhost);
-            if (c != 0)
-              return c < 0;
-            return pos < other.pos;
-          }
+          bool operator< (const UrlMapCacheKey& other) const;
+
+          const std::string& getHost() const  { return vhost; }
+          const std::string& getUrl() const  { return url; }
+          const std::string& getMethod() const  { return method; }
+          bool getSsl() const  { return ssl; }
+          urlmap_type::size_type getPos() const  { return pos; }
       };
 
       struct UrlMapCacheValue
       {
-        CompidentType ci;
-        urlmap_type::const_iterator pos;
+        Maptarget ci;
+        urlmap_type::size_type pos;
 
         UrlMapCacheValue() { }
-        UrlMapCacheValue(CompidentType ci_, urlmap_type::const_iterator pos_)
+        UrlMapCacheValue(const Maptarget& ci_, urlmap_type::size_type pos_)
           : ci(ci_),
             pos(pos_)
           { }
@@ -115,24 +139,18 @@ namespace tnt
       typedef std::map<UrlMapCacheKey, UrlMapCacheValue> urlMapCacheType;
       mutable cxxtools::ReadWriteMutex urlMapCacheMutex;
       mutable urlMapCacheType urlMapCache;
-      static urlMapCacheType::size_type maxUrlMapCache;
 
-      // don't make this public - it's not threadsafe:
-      CompidentType mapCompNext(const std::string& vhost,
-        const std::string& compUrl, urlmap_type::const_iterator& pos) const;
+      Maptarget mapCompNext(const HttpRequest& request, urlmap_type::size_type& pos) const;
 
     public:
       virtual ~Dispatcher()  { }
 
-      CompidentType& addUrlMapEntry(const std::string& vhost, const std::string& url,
-        const CompidentType& ci);
+      Mapping& addUrlMapEntry(const std::string& vhost, const std::string& url,
+        const std::string& method, int ssl, const Maptarget& ci);
 
-      Compident mapComp(const std::string& vhost, const std::string& compUrl) const;
-
-      static urlMapCacheType::size_type getMaxUrlMapCache()
-        { return maxUrlMapCache; }
-      static void setMaxUrlMapCache(urlMapCacheType::size_type s)
-        { maxUrlMapCache = s; }
+      Mapping& addUrlMapEntry(const std::string& vhost, const std::string& url,
+        const Maptarget& ci)
+      { return addUrlMapEntry(vhost, url, std::string(), SSL_ALL, ci); }
 
       friend class PosType;
 
@@ -140,23 +158,20 @@ namespace tnt
       {
           const Dispatcher& dis;
           cxxtools::ReadLock lock;
-          urlmap_type::const_iterator pos;
-          std::string vhost;
-          std::string url;
+          urlmap_type::size_type pos;
+          const HttpRequest& request;
           bool first;
 
         public:
-          PosType(const Dispatcher& d, const std::string& v,
-            const std::string& u)
+          PosType(const Dispatcher& d, const HttpRequest& r)
             : dis(d),
               lock(dis.mutex),
-              pos(dis.urlmap.begin()),
-              vhost(v),
-              url(u),
+              pos(0),
+              request(r),
               first(true)
           { }
 
-          CompidentType getNext();
+          Maptarget getNext();
       };
   };
 

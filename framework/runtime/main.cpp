@@ -29,22 +29,27 @@
 
 #include "tnt/process.h"
 #include "tnt/tntnet.h"
-#include "tnt/tntconfig.h"
 #include "tnt/cmd.h"
+#include "tnt/tntconfig.h"
 
 #include <cxxtools/log.h>
-#include <cxxtools/loginit.h>
 #include <cxxtools/arg.h>
+#include <cxxtools/xml/xmldeserializer.h>
+#include <cxxtools/jsondeserializer.h>
 
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <iostream>
 #include <stdexcept>
+#include <set>
+
+#include <glob.h>
+#include <sstream>
 
 #include "config.h"
 
 #ifndef TNTNET_CONF
-# define TNTNET_CONF "/etc/tntnet.conf"
+# define TNTNET_CONF "/etc/tntnet.xml"
 #endif
 
 #ifndef TNTNET_PID
@@ -56,9 +61,82 @@ log_define("tntnet.main")
 
 namespace tnt
 {
+  namespace
+  {
+    class Glob
+    {
+        glob_t gl;
+        unsigned n;
+
+      public:
+        explicit Glob(const std::string& pattern, int flags = 0);
+        ~Glob();
+
+        const char* current() const
+        {
+          return gl.gl_pathv ? gl.gl_pathv[n] : 0;
+        }
+
+        const char* next()
+        {
+          if (gl.gl_pathv && gl.gl_pathv[n])
+            ++n;
+          return current();
+        }
+    };
+
+    Glob::Glob(const std::string& pattern, int flags)
+      : n(0)
+    {
+      int ret = ::glob(pattern.c_str(), flags, 0, &gl);
+      if (ret == GLOB_NOMATCH)
+      {
+        gl.gl_pathv = 0;
+      }
+      else if (ret != 0)
+      {
+        std::ostringstream msg;
+        msg << "failed to process glob pattern <" << pattern << "> errorcode " << ret;
+        throw std::runtime_error(msg.str());
+      }
+    }
+
+    Glob::~Glob()
+    {
+      if (gl.gl_pathv)
+        globfree(&gl);
+    }
+
+    template <typename Deserializer>
+    void processConfigFile(const std::string& configFile, std::set<std::string>& filesProcessed)
+    {
+      TntConfig& config = TntConfig::it();
+
+      std::ifstream in(configFile.c_str());
+      if (!in)
+        throw std::runtime_error("failed to open configuration file \"" + configFile + '"');
+
+      Deserializer deserializer(in);
+      deserializer.deserialize(config);
+
+      in.close();
+
+      filesProcessed.insert(configFile);
+
+      for (std::vector<std::string>::size_type n = 0; n < config.includes.size(); ++n)
+      {
+        for (Glob glob(config.includes[n]); glob.current(); glob.next())
+        {
+          std::string configFile = glob.current();
+          if (filesProcessed.find(configFile) == filesProcessed.end())
+            processConfigFile<Deserializer>(glob.current(), filesProcessed);
+        }
+      }
+    }
+  }
+
   class TntnetProcess : public Process
   {
-      tnt::Tntconfig config;
       tnt::Tntnet tntnet;
       bool logall;
 
@@ -78,6 +156,8 @@ namespace tnt
   {
     std::string configFile;
 
+    cxxtools::Arg<bool> jsonConfig(argc, argv, 'j');
+
     // check for argument -c
     cxxtools::Arg<const char*> conf(argc, argv, 'c');
     if (conf.isSet())
@@ -95,44 +175,32 @@ namespace tnt
         if (tntnetConf)
           configFile = tntnetConf;
         else if (getuid() != 0)
-          configFile = "tntnet.conf";
+          configFile = "tntnet.xml";
         else
           configFile = TNTNET_CONF;  // take default
       }
     }
 
-    config.load(configFile.c_str());
+    std::set<std::string> filesProcessed;
+    if (jsonConfig)
+      processConfigFile<cxxtools::JsonDeserializer>(configFile, filesProcessed);
+    else
+      processConfigFile<cxxtools::xml::XmlDeserializer>(configFile, filesProcessed);
 
     if (logall)
       initializeLogging();
-
-    setDaemon(config.getBoolValue("Daemon", false));
-    setPidFile(config.getValue("PidFile", TNTNET_PID));
-    setRootdir(config.getValue("Chroot"));
-    setUser(config.getValue("User"));
-    setGroup(config.getValue("Group"));
-    setErrorLog(config.getValue("ErrorLog"));
   }
 
   void TntnetProcess::initializeLogging()
   {
-    std::string pf = config.getValue("PropertyFile");
-
-    if (pf.empty())
-      log_init();
-    else
-    {
-      struct stat properties_stat;
-      if (stat(pf.c_str(), &properties_stat) != 0)
-        throw std::runtime_error("propertyfile " + pf + " not found");
-
-      log_init(pf.c_str());
-    }
+    const cxxtools::SerializationInfo* psi = TntConfig::it().config.findMember("logging");
+    if (psi)
+      log_init(*psi);
   }
 
   void TntnetProcess::onInit()
   {
-    tntnet.init(config);
+    tntnet.init(TntConfig::it());
   }
 
   void TntnetProcess::doWork()
@@ -170,7 +238,7 @@ int main(int argc, char* argv[])
     cxxtools::Arg<bool> cmd(argc, argv, 'C');
     if (cmd)
     {
-      log_init("tntnet.properties");
+      log_init("tntnet.xml");
 
       tnt::Cmd cmdapp(std::cout);
 

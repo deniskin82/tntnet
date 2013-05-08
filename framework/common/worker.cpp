@@ -35,16 +35,21 @@
 #include <tnt/httperror.h>
 #include <tnt/http.h>
 #include <tnt/poller.h>
+#include <tnt/tntconfig.h>
 #include <cxxtools/log.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <sys/poll.h>
 #include <cxxtools/dlloader.h>
 #include <cxxtools/ioerror.h>
+#include <cxxtools/atomicity.h>
+#include <cxxtools/net/tcpserver.h>
 #include <pthread.h>
 #include <string.h>
+#include "config.h"
 
 log_define("tntnet.worker")
 
@@ -66,16 +71,13 @@ namespace tnt
 {
   cxxtools::Mutex Worker::mutex;
   Worker::workers_type Worker::workers;
-  unsigned Worker::maxRequestTime = 600;
-  bool Worker::enableCompression = true;
   Comploader Worker::comploader;
 
   Worker::Worker(Tntnet& app)
     : application(app),
       threadId(0),
       state(stateStarting),
-      lastWaitTime(0),
-      lastLogTime(0)
+      lastWaitTime(0)
   {
     cxxtools::MutexLock lock(mutex);
     workers.insert(this);
@@ -127,9 +129,7 @@ namespace tnt
               errorReply.setKeepAliveCounter(0);
               errorReply.out() << "<html><body><h1>Error</h1><p>bad request</p></body></html>\n";
               errorReply.sendReply(400, "Bad Request");
-              HttpRequest request(application);
-              request.setMethod("-");
-              logRequest(request, errorReply, 400);
+              logRequest(j->getRequest(), errorReply, 400);
             }
             else if (socket.fail())
               log_debug("socket failed");
@@ -162,7 +162,7 @@ namespace tnt
                     struct pollfd fd;
                     fd.fd = j->getFd();
                     fd.events = POLLIN;
-                    if (::poll(&fd, 1, Job::getSocketReadTimeout()) == 0)
+                    if (::poll(&fd, 1, TntConfig::it().socketReadTimeout) == 0)
                     {
                       log_debug("pass job to poll-thread");
                       application.getPoller().addIdleJob(j);
@@ -187,15 +187,18 @@ namespace tnt
 
             errorReply.out() << e.getBody() << '\n';
             errorReply.sendReply(e.getErrcode(), e.getErrmsg());
-            HttpRequest request(application);
-            request.setMethod("-");
-            logRequest(request, errorReply, e.getErrcode());
+            logRequest(j->getRequest(), errorReply, e.getErrcode());
           }
         } while (keepAlive);
       }
       catch (const cxxtools::IOTimeout& e)
       {
         application.getPoller().addIdleJob(j);
+      }
+      catch (const cxxtools::net::AcceptTerminated&)
+      {
+        log_debug("listener terminated");
+        break;
       }
       catch (const std::exception& e)
       {
@@ -229,12 +232,14 @@ namespace tnt
     if (request.isMethodHEAD())
       reply.setHeadRequest();
 
+#ifdef ENABLE_LOCALE
     reply.setLocale(request.getLocale());
+#endif
 
     if (request.keepAlive())
       reply.setKeepAliveCounter(keepAliveCount);
 
-    if (enableCompression)
+    if (TntConfig::it().enableCompression)
       reply.setAcceptEncoding(request.getEncoding());
 
     // process request
@@ -285,8 +290,6 @@ namespace tnt
 
       errorReply.out() << e.getBody() << '\n';
       errorReply.sendReply(e.getErrcode(), e.getErrmsg());
-      HttpRequest request(application);
-      request.setMethod("-");
       logRequest(request, errorReply, e.getErrcode());
     }
 
@@ -295,24 +298,32 @@ namespace tnt
 
   void Worker::logRequest(const HttpRequest& request, const HttpReply& reply, unsigned httpReturn)
   {
+    static cxxtools::atomic_t waitCount = 0;
+    cxxtools::atomicIncrement(waitCount);
+
     std::ofstream& accessLog = application.accessLog;
 
     if (!accessLog.is_open())
-      return;
-
-    log_debug("log requests with return code " << httpReturn);
-
-    time_t t;
-    ::time(&t);
-    if (t != lastLogTime)
     {
-      struct tm tm;
-      ::localtime_r(&t, &tm);
-      strftime(timebuf, sizeof(timebuf), "%d/%b/%Y:%H:%M:%S %z", &tm);
-      lastLogTime = t;
+      std::string fname = TntConfig::it().accessLog;
+      if (!fname.empty())
+      {
+        cxxtools::MutexLock lock(application.accessLogMutex);
+
+        if (!accessLog.is_open())
+        {
+          log_debug("access log is not open - open now");
+          accessLog.open(fname.c_str(), std::ios::out | std::ios::app);
+          if (accessLog.fail())
+          {
+            std::cerr << "failed to open access log \"" << fname << '"' << std::endl;
+            TntConfig::it().accessLog.clear();
+          }
+        }
+      }
     }
 
-    cxxtools::MutexLock lock(application.accessLogMutex);
+    log_debug("log request to access log with return code " << httpReturn);
 
     static const std::string unknown("-");
 
@@ -328,6 +339,23 @@ namespace tnt
     if (query.empty())
       query = unknown;
 
+    time_t t;
+    ::time(&t);
+
+    cxxtools::MutexLock lock(application.accessLogMutex);
+
+    // cache for timestamp of access log
+    static time_t lastLogTime = 0;
+    static char timebuf[40];
+
+    if (t != lastLogTime)
+    {
+      struct tm tm;
+      ::localtime_r(&t, &tm);
+      strftime(timebuf, sizeof(timebuf), "%d/%b/%Y:%H:%M:%S %z", &tm);
+      lastLogTime = t;
+    }
+
     accessLog << peerIp
               << " - " << user << " [" << timebuf << "] \""
               << request.getMethod_cstr() << ' '
@@ -340,8 +368,9 @@ namespace tnt
     else
       accessLog << '-';
     accessLog << " \"" << request.getHeader(httpheader::referer, "-") << "\" \""
-              << request.getHeader(httpheader::userAgent, "-") << "\""
-              << std::endl;
+              << request.getHeader(httpheader::userAgent, "-") << "\"\n";
+    if (cxxtools::atomicDecrement(waitCount) == 0)
+      accessLog.flush();
   }
 
   void Worker::dispatch(HttpRequest& request, HttpReply& reply)
@@ -357,14 +386,13 @@ namespace tnt
 
     request.setThreadContext(this);
 
-    Dispatcher::PosType pos(application.getDispatcher(), request.getHost(),
-      request.getUrl());
+    Dispatcher::PosType pos(application.getDispatcher(), request);
     while (true)
     {
       state = stateDispatch;
 
       // pos.getNext() throws NotFoundException at end
-      Dispatcher::CompidentType ci = pos.getNext();
+      Maptarget ci = pos.getNext();
       try
       {
         Component* comp = 0;
@@ -376,7 +404,7 @@ namespace tnt
             // linked directly
             try
             {
-              Dispatcher::CompidentType cii = ci;
+              Compident cii = ci;
               cii.libname = std::string();
               comp = &comploader.fetchComp(cii, application.getDispatcher());
             }
@@ -479,14 +507,14 @@ namespace tnt
   {
     if (state == stateProcessingRequest
         && lastWaitTime != 0
-        && maxRequestTime > 0)
+        && TntConfig::it().maxRequestTime > 0)
     {
-      if (static_cast<unsigned>(currentTime - lastWaitTime) > maxRequestTime)
+      if (static_cast<unsigned>(currentTime - lastWaitTime) > TntConfig::it().maxRequestTime)
       {
-        log_fatal("requesttime " << maxRequestTime << " seconds in thread "
+        log_fatal("requesttime " << TntConfig::it().maxRequestTime << " seconds in thread "
           << threadId << " exceeded - exit process");
         log_info("current state: " << state);
-        ::exit(111);
+        ::_exit(111);
       }
     }
   }

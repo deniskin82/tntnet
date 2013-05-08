@@ -1,7 +1,7 @@
 /* framework/common/config.h.in.  Generated from configure.in by autoheader.  */
 
-/* defined if cxxtools::TcpServer has getFd method */
-#undef HAVE_CXXTOOLS_TCPSERVER_GETFD
+/* Defined if locale is used */
+#undef ENABLE_LOCALE
 
 /* Define to 1 if you have the <dlfcn.h> header file. */
 #undef HAVE_DLFCN_H

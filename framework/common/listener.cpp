@@ -33,9 +33,6 @@
 #include <cxxtools/log.h>
 #include <cxxtools/net/net.h>
 #include <unistd.h>
-#ifdef HAVE_CXXTOOLS_TCPSERVER_GETFD
-#include <fcntl.h>
-#endif
 
 #ifdef WITH_GNUTLS
 #  include "tnt/gnutls.h"
@@ -47,56 +44,45 @@
 
 log_define("tntnet.listener")
 
-static void doListenRetry(cxxtools::net::TcpServer& server,
-  const char* ipaddr, unsigned short int port)
-{
-  for (unsigned n = 1; true; ++n)
-  {
-    try
-    {
-      log_debug("listen " << ipaddr << ':' << port);
-      server.listen(ipaddr, port, tnt::Listener::getBacklog(), cxxtools::net::TcpServer::DEFER_ACCEPT);
-      return;
-    }
-    catch (const cxxtools::net::AddressInUse& e)
-    {
-      log_debug("cxxtools::net::AddressInUse");
-      if (n > tnt::Listener::getListenRetry())
-      {
-        log_debug("rethrow exception");
-        throw;
-      }
-      log_warn("address " << ipaddr << ':' << port << " in use - retry; n = " << n);
-      ::sleep(1);
-    }
-  }
-}
-
 namespace tnt
 {
-  void ListenerBase::doStop()
+  namespace
+  {
+    void doListenRetry(cxxtools::net::TcpServer& server,
+      const char* ipaddr, unsigned short int port)
+    {
+      for (unsigned n = 1; true; ++n)
+      {
+        try
+        {
+          log_debug("listen " << ipaddr << ':' << port);
+          server.listen(ipaddr, port, TntConfig::it().listenBacklog, cxxtools::net::TcpServer::DEFER_ACCEPT);
+          return;
+        }
+        catch (const cxxtools::net::AddressInUse& e)
+        {
+          log_debug("cxxtools::net::AddressInUse");
+          if (n > TntConfig::it().listenRetry)
+          {
+            log_debug("rethrow exception");
+            throw;
+          }
+          log_warn("address " << ipaddr << ':' << port << " in use - retry; n = " << n);
+          ::sleep(1);
+        }
+      }
+    }
+  }
+
+  void ListenerBase::terminate()
   {
     log_info("stop listener " << ipaddr << ':' << port);
-    try
-    {
-      // connect once to wake up listener, so it will check stop-flag
-      cxxtools::net::TcpSocket s(ipaddr, port);
-      char ch = 'A';
-      s.write(&ch, 1);
-    }
-    catch (const std::exception& e)
-    {
-      log_warn("error waking up listener: " << e.what() << " try 127.0.0.1");
-      cxxtools::net::TcpSocket("127.0.0.1", port);
-    }
+    doTerminate();
   }
 
   void ListenerBase::initialize()
   {
   }
-
-  int Listener::backlog = 64;
-  unsigned Listener::listenRetry = 5;
 
   Listener::Listener(Tntnet& application, const std::string& ipaddr_, unsigned short int port_, Jobqueue& q)
     : ListenerBase(ipaddr_, port_),
@@ -106,12 +92,14 @@ namespace tnt
     queue.put(new Tcpjob(application, server, queue));
   }
 
+  void Listener::doTerminate()
+  {
+    server.terminateAccept();
+  }
+
   void Listener::initialize()
   {
     log_info("listen ip=" << getIpaddr() << " port=" << getPort());
-#ifdef HAVE_CXXTOOLS_TCPSERVER_GETFD
-    fcntl(server.getFd(), F_SETFD, FD_CLOEXEC);
-#endif
   }
 
 #ifdef WITH_GNUTLS
@@ -137,12 +125,14 @@ namespace tnt
     queue.put(new SslTcpjob(application, server, queue));
   }
 
+  void Ssllistener::doTerminate()
+  {
+    server.terminateAccept();
+  }
+
   void Ssllistener::initialize()
   {
     log_info("listen ip=" << getIpaddr() << " port=" << getPort() << " (ssl)");
-#ifdef HAVE_CXXTOOLS_TCPSERVER_GETFD
-    fcntl(server.getFd(), F_SETFD, FD_CLOEXEC);
-#endif
   }
 
 #endif // USE_SSL

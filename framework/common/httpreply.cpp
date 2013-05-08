@@ -32,8 +32,14 @@
 #include <tnt/httpheader.h>
 #include <tnt/deflatestream.h>
 #include <tnt/httperror.h>
+#include <tnt/tntconfig.h>
+#include <tnt/htmlescostream.h>
+#include <tnt/urlescostream.h>
+#include <tnt/encoding.h>
 #include <cxxtools/log.h>
 #include <cxxtools/md5stream.h>
+#include <cxxtools/mutex.h>
+#include <sstream>
 #include <zlib.h>
 #include <netinet/in.h>
 
@@ -44,10 +50,6 @@ namespace tnt
   ////////////////////////////////////////////////////////////////////////
   // HttpReply
   //
-  unsigned HttpReply::keepAliveTimeout = 15000;
-  unsigned HttpReply::minCompressSize = 1024;
-  std::string HttpReply::defaultContentType = "text/html; charset=UTF-8";
-
   namespace
   {
     std::string doCompress(const std::string& body)
@@ -81,6 +83,181 @@ namespace tnt
     }
   }
 
+  //////////////////////////////////////////////////////////////////////
+  // HttpReply::Impl
+  //
+
+  struct HttpReply::Impl
+  {
+    std::ostream* socket;
+    std::ostringstream outstream;
+    HtmlEscOstream safe_outstream;
+    UrlEscOstream url_outstream;
+
+    Encoding acceptEncoding;
+
+    unsigned keepAliveCounter;
+
+    bool sendStatusLine;
+    bool headRequest;
+    bool clearSession;
+
+    Impl(std::ostream& s, bool sendStatusLine);
+
+    struct Pool
+    {
+      std::vector<Impl*> pool;
+      cxxtools::Mutex poolMutex;
+
+      ~Pool()
+      {
+        for (unsigned n = 0; n < pool.size(); ++n)
+          delete pool[n];
+      }
+
+      Impl* getInstance(std::ostream& s, bool sendStatusLine);
+      void releaseInstance(Impl* inst);
+      void clear();
+    };
+
+    static Pool pool;
+
+  private:
+    Impl(const Impl&);
+    Impl& operator=(const Impl&);
+  };
+
+  HttpReply::Impl::Pool HttpReply::Impl::pool;
+
+  HttpReply::Impl* HttpReply::Impl::Pool::getInstance(std::ostream& s, bool sendStatusLine)
+  {
+    cxxtools::MutexLock lock(poolMutex);
+
+    if (pool.empty())
+      return new Impl(s, sendStatusLine);
+
+    Impl* impl = pool.back();
+    pool.pop_back();
+
+    impl->socket = &s;
+    impl->keepAliveCounter = 0;
+    impl->sendStatusLine = sendStatusLine;
+    impl->headRequest = false;
+    impl->clearSession = false;
+    impl->acceptEncoding.clear();
+    impl->safe_outstream.setSink(impl->outstream.rdbuf());
+
+    return impl;
+  }
+
+  void HttpReply::Impl::Pool::releaseInstance(Impl* inst)
+  {
+    cxxtools::MutexLock lock(poolMutex);
+    if (pool.size() < 64)
+    {
+      inst->outstream.clear();
+      inst->outstream.str(std::string());
+      inst->safe_outstream.clear();
+      inst->url_outstream.clear();
+      pool.push_back(inst);
+    }
+    else
+    {
+      delete inst;
+    }
+  }
+
+  void HttpReply::Impl::Pool::clear()
+  {
+    cxxtools::MutexLock lock(poolMutex);
+    for (unsigned n = 0; n < pool.size(); ++n)
+      delete pool[n];
+    pool.clear();
+  }
+
+  HttpReply::Impl::Impl(std::ostream& s, bool sendStatusLine_)
+    : socket(&s),
+      safe_outstream(outstream),
+      url_outstream(outstream),
+      keepAliveCounter(0),
+      sendStatusLine(sendStatusLine_),
+      headRequest(false),
+      clearSession(false)
+  {
+  }
+
+  //////////////////////////////////////////////////////////////////////
+  // HttpReply
+  //
+  HttpReply::HttpReply(std::ostream& s, bool sendStatusLine_)
+    : impl(Impl::pool.getInstance(s, sendStatusLine_)),
+      current_outstream(&impl->outstream),
+      safe_outstream(&impl->safe_outstream),
+      url_outstream(&impl->url_outstream)
+  {
+  }
+
+  HttpReply::~HttpReply()
+  {
+    Impl::pool.releaseInstance(impl);
+  }
+
+  void HttpReply::setHeadRequest(bool sw)
+  {
+    impl->headRequest = sw;
+  }
+
+  void HttpReply::clearSession()
+  {
+    impl->clearSession = true;
+  }
+
+  bool HttpReply::isClearSession() const
+  {
+    return impl->clearSession;
+  }
+
+  void HttpReply::resetContent()
+  {
+    impl->outstream.str(std::string());
+  }
+
+  void HttpReply::rollbackContent(unsigned size)
+  {
+    impl->outstream.str( impl->outstream.str().substr(0, size) );
+    impl->outstream.seekp(size);
+  }
+
+  bool HttpReply::isDirectMode() const
+  {
+    return current_outstream == impl->socket;
+  }
+
+  std::string::size_type HttpReply::getContentSize() const
+  {
+    return impl->outstream.str().size();
+  }
+
+  std::ostream& HttpReply::getDirectStream()
+  {
+    return *impl->socket;
+  }
+
+  void HttpReply::setKeepAliveCounter(unsigned c)
+  {
+    impl->keepAliveCounter = c;
+  }
+
+  unsigned HttpReply::getKeepAliveCounter() const
+  {
+    return impl->keepAliveCounter;
+  }
+
+  void HttpReply::setAcceptEncoding(const Encoding& enc)
+  {
+    impl->acceptEncoding = enc;
+  }
+
   bool HttpReply::tryCompress(std::string& body)
   {
     log_debug("gzip");
@@ -100,16 +277,21 @@ namespace tnt
     return false;
   }
 
+  void HttpReply::postRunCleanup()
+  {
+    Impl::pool.clear();
+  }
+
   void HttpReply::send(unsigned ret, const char* msg, bool ready) const
   {
-    std::string body = outstream.str();
+    std::string body = impl->outstream.str();
 
-    std::ostream hsocket(socket.rdbuf());
+    std::ostream hsocket(impl->socket->rdbuf());
     hsocket.imbue(std::locale::classic());
 
     // send header
 
-    if (sendStatusLine)
+    if (impl->sendStatusLine)
     {
       log_debug("HTTP/" << getMajorVersion() << '.' << getMinorVersion()
              << ' ' << ret << ' ' << msg);
@@ -132,9 +314,9 @@ namespace tnt
 
     if (ready)
     {
-      if (body.size() >= minCompressSize
+      if (body.size() >= TntConfig::it().minCompressSize
         && !hasHeader(httpheader::contentEncoding)
-        && acceptEncoding.accept("gzip")
+        && impl->acceptEncoding.accept("gzip")
         && tryCompress(body))
       {
         log_debug(httpheader::contentEncoding << " gzip");
@@ -149,17 +331,17 @@ namespace tnt
 
       if (!hasHeader(httpheader::contentType))
       {
-        log_debug(httpheader::contentType << ' ' << defaultContentType);
-        hsocket << httpheader::contentType << ' ' << defaultContentType << "\r\n";
+        log_debug(httpheader::contentType << ' ' << TntConfig::it().defaultContentType);
+        hsocket << httpheader::contentType << ' ' << TntConfig::it().defaultContentType << "\r\n";
       }
 
       if (!hasHeader(httpheader::connection))
       {
-        if (keepAliveTimeout > 0 && getKeepAliveCounter() > 0)
+        if (TntConfig::it().keepAliveTimeout > 0 && getKeepAliveCounter() > 0)
         {
-          log_debug(httpheader::keepAlive << " timeout=" << keepAliveTimeout << ", max=" << getKeepAliveCounter());
+          log_debug(httpheader::keepAlive << " timeout=" << TntConfig::it().keepAliveTimeout << ", max=" << getKeepAliveCounter());
           log_debug(httpheader::connection << ' ' << httpheader::connectionKeepAlive);
-          hsocket << httpheader::keepAlive << " timeout=" << keepAliveTimeout << ", max=" << getKeepAliveCounter() << "\r\n"
+          hsocket << httpheader::keepAlive << " timeout=" << TntConfig::it().keepAliveTimeout << ", max=" << getKeepAliveCounter() << "\r\n"
                   << httpheader::connection << ' ' << httpheader::connectionKeepAlive << "\r\n";
         }
         else
@@ -194,7 +376,7 @@ namespace tnt
 
     // send body
 
-    if (headRequest)
+    if (impl->headRequest)
       log_debug("HEAD-request - empty body");
     else
     {
@@ -208,30 +390,19 @@ namespace tnt
     }
   }
 
-  HttpReply::HttpReply(std::ostream& s, bool sendStatusLine_)
-    : socket(s),
-      current_outstream(&outstream),
-      safe_outstream(outstream),
-      url_outstream(outstream),
-      keepAliveCounter(0),
-      sendStatusLine(sendStatusLine_),
-      headRequest(false)
-  {
-  }
-
   void HttpReply::sendReply(unsigned ret, const char* msg)
   {
     if (!isDirectMode())
     {
       send(ret, msg, true);
-      socket.flush();
+      impl->socket->flush();
     }
   }
 
   void HttpReply::setMd5Sum()
   {
     cxxtools::Md5stream md5;
-    md5 << outstream.str().size();
+    md5 << impl->outstream.str().size();
     setHeader(httpheader::contentMD5, md5.getHexDigest());
   }
 
@@ -239,8 +410,8 @@ namespace tnt
   {
     setHeader(httpheader::location, newLocation);
 
-    outstream.str(std::string());
-    outstream << "<html><body>moved to <a href=\"" << newLocation << "\">" << newLocation << "</a></body></html>";
+    impl->outstream.str(std::string());
+    impl->outstream << "<html><body>moved to <a href=\"" << newLocation << "\">" << newLocation << "</a></body></html>";
 
     throw HttpReturn(HTTP_MOVED_TEMPORARILY, "moved temporarily");
 
@@ -251,8 +422,8 @@ namespace tnt
   {
     setHeader(httpheader::wwwAuthenticate, "Basic realm=\"" + realm + '"');
 
-    outstream.str(std::string());
-    outstream << "<html><body><h1>not authorized</h1></body></html>";
+    impl->outstream.str(std::string());
+    impl->outstream << "<html><body><h1>not authorized</h1></body></html>";
 
     throw HttpReturn(HTTP_UNAUTHORIZED, "not authorized");
 
@@ -272,11 +443,11 @@ namespace tnt
     log_debug("setKeepAliveHeader()");
     removeHeader(httpheader::connection);
     removeHeader(httpheader::keepAlive);
-    if (keepAliveTimeout > 0 && getKeepAliveCounter() > 0)
+    if (TntConfig::it().keepAliveTimeout > 0 && getKeepAliveCounter() > 0)
     {
       std::ostringstream s;
       s.imbue(std::locale::classic());
-      s << "timeout=" << keepAliveTimeout << ", max=" << getKeepAliveCounter();
+      s << "timeout=" << TntConfig::it().keepAliveTimeout << ", max=" << getKeepAliveCounter();
       setHeader(httpheader::keepAlive, s.str());
 
       setHeader(httpheader::connection, httpheader::connectionKeepAlive);
@@ -290,15 +461,15 @@ namespace tnt
     if (!isDirectMode())
     {
       send(ret, msg, false);
-      current_outstream = &socket;
-      safe_outstream.setSink(socket);
+      current_outstream = impl->socket;
+      impl->safe_outstream.setSink(*impl->socket);
     }
   }
 
   void HttpReply::setDirectModeNoFlush()
   {
-    current_outstream = &socket;
-    safe_outstream.setSink(socket);
+    current_outstream = impl->socket;
+    impl->safe_outstream.setSink(*impl->socket);
   }
 
   void HttpReply::setCookie(const std::string& name, const Cookie& value)
@@ -330,7 +501,7 @@ namespace tnt
     }
     else
     {
-      return keepAliveTimeout > 0 && getKeepAliveCounter() > 0;
+      return TntConfig::it().keepAliveTimeout > 0 && getKeepAliveCounter() > 0;
     }
   }
 }

@@ -390,7 +390,7 @@ namespace tnt
           case state_tag:
             if (ch == '>')
             {
-              if (tag == "args" || tag == "config")
+              if (tag == "args" || tag == "get" || tag == "post" || tag == "config")
                 state = state_args0;
               else if (tag == "attr")
                 state = state_attr0;
@@ -411,6 +411,12 @@ namespace tnt
               else if (tag == "session")
               {
                 scope_container = session_container;
+                scope = component_scope;
+                state = state_scope0;
+              }
+              else if (tag == "securesession")
+              {
+                scope_container = secure_session_container;
                 scope = component_scope;
                 state = state_scope0;
               }
@@ -445,30 +451,44 @@ namespace tnt
             }
             else if (!inComp && tag == "def" && std::isspace(ch))
               state = state_tagarg0;
-            else if (std::isspace(ch) && tag == "application")
+            else if (std::isspace(ch))
             {
-              scope_container = application_container;
-              state = state_scopearg0;
-            }
-            else if (std::isspace(ch) && tag == "thread")
-            {
-              scope_container = thread_container;
-              state = state_scopearg0;
-            }
-            else if (std::isspace(ch) && tag == "session")
-            {
-              scope_container = session_container;
-              state = state_scopearg0;
-            }
-            else if (std::isspace(ch) && tag == "request")
-            {
-              scope_container = request_container;
-              state = state_scopearg0;
-            }
-            else if (std::isspace(ch) && tag == "param")
-            {
-              scope_container = param_container;
-              state = state_scopearg0;
+              if (tag == "application")
+              {
+                scope_container = application_container;
+                state = state_scopearg0;
+              }
+              else if (tag == "thread")
+              {
+                scope_container = thread_container;
+                state = state_scopearg0;
+              }
+              else if (tag == "session")
+              {
+                scope_container = session_container;
+                state = state_scopearg0;
+              }
+              else if (tag == "securesession")
+              {
+                scope_container = secure_session_container;
+                state = state_scopearg0;
+              }
+              else if (tag == "request")
+              {
+                scope_container = request_container;
+                state = state_scopearg0;
+              }
+              else if (tag == "param")
+              {
+                scope_container = param_container;
+                state = state_scopearg0;
+              }
+              else
+              {
+                state_type s = state;
+                state = state_html0;
+                throw parse_error("unknown tag " + tag, s, curfile, curline);
+              }
             }
             else
               tag += ch;
@@ -491,7 +511,7 @@ namespace tnt
               state = state_defarg0;
             else if (ch == '>')
             {
-              if (tag == "args")
+              if (tag == "args" || tag == "get" || tag == "post")
                 state = state_args0;
               else if (tag == "attr")
                 state = state_attr0;
@@ -523,7 +543,7 @@ namespace tnt
           case state_tagarge:
             if (ch == '>')
             {
-              if (tag == "args")
+              if (tag == "args" || tag == "get" || tag == "post")
                 state = state_args0;
               else if (tag == "attr")
                 state = state_attr0;
@@ -617,7 +637,11 @@ namespace tnt
               state = state_html0;
             }
             else if (!std::isspace(ch))
-              throw parse_error("def", state, curfile, curline);
+            {
+              state_type s = state;
+              state = state_html0;
+              throw parse_error("def", s, curfile, curline);
+            }
             break;
 
           case state_cppcomment0:
@@ -751,9 +775,13 @@ namespace tnt
             if (ch == '>')
             {
               if (tag != etag)
+              {
+                state_type s = state;
+                state = state_html0;
                 throw parse_error("invalid end-tag - "
                   + tag + " expected, "
-                  + etag + " found", state, curfile, curline);
+                  + etag + " found", s, curfile, curline);
+              }
               else if (tag == "pre")
               {
                 log_debug("onPre(\"" << code << "\")");
@@ -787,9 +815,14 @@ namespace tnt
               {
                 handler.onExpression(code);
               }
-              else if (tag == "args" || tag == "attr" || tag == "config"
+              else if (tag == "args"
+                || tag == "get"
+                || tag == "post"
+                || tag == "attr"
+                || tag == "config"
                 || tag == "include"
                 || tag == "session"
+                || tag == "securesession"
                 || tag == "application"
                 || tag == "thread"
                 || tag == "request"
@@ -797,7 +830,11 @@ namespace tnt
                 || tag == "doc")
                 ;
               else
-                throw parse_error("unknown tag " + tag, state, curfile, curline);
+              {
+                state_type s = state;
+                state = state_html0;
+                throw parse_error("unknown tag " + tag, s, curfile, curline);
+              }
               code.clear();
               state = state_html0;
             }
@@ -1129,7 +1166,7 @@ namespace tnt
             break;
 
           case state_callname:
-            if (ch == '&' || ch == '/' || ch == '>')
+            if (ch == '&' || ch == '>')
             {
               log_debug("onCall(\"" << comp << "comp_args (" << comp_args.size() << "), \"" << pass_cgi << "\", paramargs (" << paramargs.size() << "), defarg (" << defarg.size() << "))");
               handler.onCall(comp, comp_args, pass_cgi, paramargs, defarg);
@@ -1906,6 +1943,10 @@ namespace tnt
     {
       if (tag == "args")
         handler.onArg(name, value);
+      if (tag == "get")
+        handler.onGet(name, value);
+      if (tag == "post")
+        handler.onPost(name, value);
       else if (tag == "config")
         handler.onConfig(name, value);
     }
@@ -1914,7 +1955,7 @@ namespace tnt
       : runtime_error(std::string())
     {
       std::ostringstream m;
-      m << file << ':' << curline << ": error: " << txt << " (state " << state << ')';
+      m << file << ':' << (curline + 1) << ": error: " << txt << " (state " << state << ')';
       msg = m.str();
     }
 

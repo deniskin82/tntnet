@@ -51,7 +51,6 @@ namespace tnt
   ////////////////////////////////////////////////////////////////////////
   // HttpRequest
   //
-  size_t HttpRequest::maxRequestSize = 0;
   cxxtools::atomic_t HttpRequest::serial_ = 0;
 
   HttpRequest::HttpRequest(Tntnet& application_, const SocketIf* socketIf_)
@@ -61,9 +60,11 @@ namespace tnt
       requestScope(0),
       applicationScope(0),
       sessionScope(0),
+      secureSessionScope(0),
       threadContext(0),
       applicationScopeLocked(false),
       sessionScopeLocked(false),
+      secureSessionScopeLocked(false),
       application(application_)
   {
   }
@@ -74,9 +75,11 @@ namespace tnt
       requestScope(0),
       applicationScope(0),
       sessionScope(0),
+      secureSessionScope(0),
       threadContext(0),
       applicationScopeLocked(false),
       sessionScopeLocked(false),
+      secureSessionScopeLocked(false),
       application(application_)
   {
     std::istringstream s("GET " + url_ + " HTTP/1.1\r\n\r\n");
@@ -87,6 +90,8 @@ namespace tnt
     : methodLen(0),
       pathinfo(r.pathinfo),
       args(r.args),
+      getparam(r.getparam),
+      postparam(r.postparam),
       qparam(r.qparam),
       socketIf(r.socketIf),
       ct(r.ct),
@@ -97,9 +102,11 @@ namespace tnt
       requestScope(r.requestScope),
       applicationScope(r.applicationScope),
       sessionScope(r.sessionScope),
+      secureSessionScope(r.secureSessionScope),
       threadContext(r.threadContext),
       applicationScopeLocked(false),
       sessionScopeLocked(false),
+      secureSessionScopeLocked(false),
       application(r.application)
   {
     if (requestScope)
@@ -108,24 +115,30 @@ namespace tnt
       applicationScope->addRef();
     if (sessionScope)
       sessionScope->addRef();
+    if (secureSessionScope)
+      secureSessionScope->addRef();
   }
 
   HttpRequest::~HttpRequest()
   {
     releaseLocks();
 
-    if (requestScope)
-      requestScope->release();
-    if (applicationScope)
-      applicationScope->release();
-    if (sessionScope)
-      sessionScope->release();
+    if (requestScope && requestScope->release() == 0)
+      delete requestScope;
+    if (applicationScope && applicationScope->release() == 0)
+      delete applicationScope;
+    if (sessionScope && sessionScope->release() == 0)
+      delete sessionScope;
+    if (secureSessionScope && secureSessionScope->release() == 0)
+      delete secureSessionScope;
   }
 
   HttpRequest& HttpRequest::operator= (const HttpRequest& r)
   {
     pathinfo = r.pathinfo;
     args = r.args;
+    getparam = r.getparam;
+    postparam = r.postparam;
     qparam = r.qparam;
     ct = r.ct;
     mp = r.mp;
@@ -136,9 +149,11 @@ namespace tnt
     requestScope = r.requestScope;
     applicationScope = r.applicationScope;
     sessionScope = r.sessionScope;
+    secureSessionScope = r.secureSessionScope;
     threadContext = r.threadContext;
     applicationScopeLocked = false;
     sessionScopeLocked = false;
+    secureSessionScopeLocked = false;
 
     if (requestScope)
       requestScope->addRef();
@@ -146,6 +161,8 @@ namespace tnt
       applicationScope->addRef();
     if (sessionScope)
       sessionScope->addRef();
+    if (secureSessionScope)
+      secureSessionScope->addRef();
 
     return *this;
   }
@@ -161,13 +178,16 @@ namespace tnt
     contentSize = 0;
     pathinfo.clear();
     args.clear();
+    getparam.clear();
+    postparam.clear();
     qparam.clear();
     ct = Contenttype();
     mp = Multipart();
     locale_init = false;
     if (requestScope)
     {
-      requestScope->release();
+      if (requestScope->release() == 0)
+        delete requestScope;
       requestScope = 0;
     }
     httpcookies.clear();
@@ -179,14 +199,23 @@ namespace tnt
 
     if (applicationScope)
     {
-      applicationScope->release();
+      if (applicationScope->release() == 0)
+        delete applicationScope;
       applicationScope = 0;
     }
 
     if (sessionScope)
     {
-      sessionScope->release();
+      if (sessionScope->release() == 0)
+        delete sessionScope;
       sessionScope = 0;
+    }
+
+    if (secureSessionScope)
+    {
+      if (secureSessionScope->release() == 0)
+        delete secureSessionScope;
+      secureSessionScope = 0;
     }
 
     threadContext = 0;
@@ -199,14 +228,17 @@ namespace tnt
     std::strcpy(method, m);
   }
 
+  std::string HttpRequest::getArgDef(args_type::size_type n, const std::string& def) const
+  {
+    std::ostringstream k;
+    k << "arg" << n;
+    return getArg(k.str(), def);
+  }
+
   std::string HttpRequest::getArg(const std::string& name, const std::string& def) const
   {
-    for (args_type::const_iterator it = args.begin(); it != args.end(); ++it)
-      if (it->size() > name.size()
-        && it->compare(0, name.size(), name) == 0
-        && it->at(name.size()) == '=')
-        return it->substr(name.size() + 1);
-    return def;
+    args_type::const_iterator it = args.find(name);
+    return it == args.end() ? def : it->second;
   }
 
   void HttpRequest::parse(std::istream& in)
@@ -222,7 +254,7 @@ namespace tnt
     if (hasHeader("Expect:"))
       throw HttpError(HTTP_EXPECTATION_FAILED, "expectation failed", "Expect not supported by this server");
 
-    qparam.parse_url(getQueryString());
+    getparam.parse_url(getQueryString());
 
     if (isMethodPOST())
     {
@@ -242,51 +274,55 @@ namespace tnt
             if (it->getFilename().empty())
             {
               std::string multipartBody(it->getBodyBegin(), it->getBodyEnd());
-              qparam.add(it->getName(), multipartBody);
+              postparam.add(it->getName(), multipartBody);
             }
           }
         }
         else if (ct.getType() == "application"
               && ct.getSubtype() == "x-www-form-urlencoded")
         {
-          qparam.parse_url(getBody());
+          postparam.parse_url(getBody());
         }
       }
     }
+
+    qparam.add(getparam);
+    qparam.add(postparam);
 
     serial = cxxtools::atomicIncrement(serial_);
   }
 
   namespace
   {
+#ifdef ENABLE_LOCALE
+    typedef std::map<std::string, std::locale> locale_map_type;
+    static const std::locale* stdlocalePtr = 0;
+    static const std::locale* stdlocale = 0;
+    static locale_map_type locale_map;
+    static cxxtools::Mutex locale_monitor;
+
     const std::locale& getCacheLocale(const std::string& lang)
     {
-      static std::locale stdlocale;
-      static bool stdlocale_init = false;
-
-      typedef std::map<std::string, std::locale> locale_map_type;
-      static locale_map_type locale_map;
-      static cxxtools::Mutex locale_monitor;
-
-      if (!stdlocale_init)
+      if (stdlocale == 0)
       {
         cxxtools::MutexLock lock(locale_monitor);
-        if (!stdlocale_init)
+        if (stdlocale == 0)
         {
-          stdlocale_init = true;
           try
           {
-            stdlocale = std::locale("");
+            stdlocalePtr = new std::locale("");
+            stdlocale = stdlocalePtr;
           }
           catch (const std::exception& e)
           {
             log_warn("error initializing standard-locale - using locale \"C\"");
+            stdlocale = &std::locale::classic();
           }
         }
       }
 
-      if (lang.empty() || lang == stdlocale.name())
-        return stdlocale;
+      if (lang.empty() || lang == stdlocale->name())
+        return *stdlocale;
 
       try
       {
@@ -303,14 +339,25 @@ namespace tnt
       catch (const std::exception& e)
       {
         log_warn("unknown locale " << lang << ": " << e.what());
-        locale_map.insert(locale_map_type::value_type(lang, stdlocale));
-        return stdlocale;
+        locale_map.insert(locale_map_type::value_type(lang, *stdlocale));
+        return *stdlocale;
       }
     }
+
+    void clearLocaleCache()
+    {
+      cxxtools::MutexLock lock(locale_monitor);
+      locale_map.clear();
+      delete stdlocalePtr;
+      stdlocalePtr = 0;
+      stdlocale = 0;
+    }
+#endif
   }
 
   const std::locale& HttpRequest::getLocale() const
   {
+#ifdef ENABLE_LOCALE
     if (!locale_init)
     {
       static const std::string LANG = "LANG";
@@ -322,20 +369,27 @@ namespace tnt
     }
 
     return locale;
+#else
+    return std::locale::classic();
+#endif
   }
 
   void HttpRequest::setLocale(const std::locale& loc)
   {
+#ifdef ENABLE_LOCALE
     locale_init = true;
     locale = loc;
     lang = loc.name();
+#endif
   }
 
   void HttpRequest::setLang(const std::string& lang_)
   {
+#ifdef ENABLE_LOCALE
     lang = lang_;
     locale = getCacheLocale(lang_);
     locale_init = true;
+#endif
   }
 
   const Cookies& HttpRequest::getCookies() const
@@ -414,7 +468,8 @@ namespace tnt
     if (applicationScope)
     {
       releaseApplicationScopeLock();
-      applicationScope->release();
+      if (applicationScope->release() == 0)
+        delete applicationScope;
     }
 
     if (s)
@@ -429,24 +484,73 @@ namespace tnt
 
     if (sessionScope)
     {
-      releaseSessionScopeLock();
-      sessionScope->release();
+      if (sessionScopeLocked)
+      {
+        sessionScope->unlock();
+        sessionScopeLocked = false;
+      }
+      if (sessionScope->release() == 0)
+        delete sessionScope;
     }
 
     if (s)
       s->addRef();
+
     sessionScope = s;
+  }
+
+  void HttpRequest::setSecureSessionScope(Sessionscope* s)
+  {
+    if (secureSessionScope == s)
+      return;
+
+    if (secureSessionScope)
+    {
+      if (secureSessionScopeLocked)
+      {
+        secureSessionScope->unlock();
+        secureSessionScopeLocked = false;
+      }
+      if (secureSessionScope->release() == 0)
+        delete secureSessionScope;
+    }
+
+    if (s)
+      s->addRef();
+
+    secureSessionScope = s;
   }
 
   void HttpRequest::clearSession()
   {
+    log_info("end session");
+
     if (sessionScope)
     {
-      log_info("end session");
-      releaseSessionScopeLock();
-      sessionScope->release();
+      if (sessionScopeLocked)
+      {
+        sessionScope->unlock();
+        sessionScopeLocked = false;
+      }
+
+      if (sessionScope->release() == 0)
+        delete sessionScope;
       sessionScope = 0;
     }
+
+    if (secureSessionScope)
+    {
+      if (secureSessionScopeLocked)
+      {
+        secureSessionScope->unlock();
+        secureSessionScopeLocked = false;
+      }
+
+      if (secureSessionScope->release() == 0)
+        delete secureSessionScope;
+      secureSessionScope = 0;
+    }
+
   }
 
   void HttpRequest::ensureApplicationScopeLock()
@@ -466,6 +570,13 @@ namespace tnt
       sessionScope->lock();
       sessionScopeLocked = true;
     }
+
+    if (secureSessionScope && !secureSessionScopeLocked)
+    {
+      secureSessionScope->lock();
+      secureSessionScopeLocked = true;
+    }
+
   }
 
   void HttpRequest::releaseApplicationScopeLock()
@@ -481,6 +592,12 @@ namespace tnt
 
   void HttpRequest::releaseSessionScopeLock()
   {
+    if (secureSessionScope && secureSessionScopeLocked)
+    {
+      secureSessionScopeLocked = false;
+      secureSessionScope->unlock();
+    }
+
     if (sessionScope && sessionScopeLocked)
     {
       sessionScopeLocked = false;
@@ -516,9 +633,29 @@ namespace tnt
     return *sessionScope;
   }
 
+  Sessionscope& HttpRequest::getSecureSessionScope()
+  {
+    if (!secureSessionScope)
+      secureSessionScope = new Sessionscope();
+    ensureSessionScopeLock();
+    return *secureSessionScope;
+  }
+
   bool HttpRequest::hasSessionScope() const
   {
     return sessionScope != 0 && !sessionScope->empty();
+  }
+
+  bool HttpRequest::hasSecureSessionScope() const
+  {
+    return secureSessionScope != 0 && !secureSessionScope->empty();
+  }
+
+  void HttpRequest::postRunCleanup()
+  {
+#ifdef ENABLE_LOCALE
+    tnt::clearLocaleCache();
+#endif
   }
 }
 

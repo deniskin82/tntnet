@@ -32,7 +32,6 @@
 #include <cxxtools/mutex.h>
 #include <cxxtools/log.h>
 #include <sstream>
-#include "tnt/gcryptinit.h"
 #include <sys/poll.h>
 #include <errno.h>
 #include <cxxtools/ioerror.h>
@@ -150,11 +149,6 @@ namespace tnt
     cxxtools::MutexLock lock(mutex);
     if (initCount++ == 0)
     {
-      log_debug("gcry_control");
-      ret = gcrypt_init();
-      if (ret != 0)
-        throw GnuTlsException("gcry_control", ret);
-
       log_debug("gnutls_global_init()");
       ret = gnutls_global_init();
       if (ret != 0)
@@ -322,42 +316,27 @@ namespace tnt
 
     fdInfo.timeout = getTimeout();
 
-    if (getTimeout() < 0)
-    {
-      // blocking
-      do
-      {
-        log_debug("gnutls_record_recv");
-        ret = gnutls_record_recv(session, buffer, bufsize);
-      } while (ret == GNUTLS_E_INTERRUPTED || ret == GNUTLS_E_AGAIN);
+    // non-blocking/with timeout
 
-      if (ret < 0)
+    while (true)
+    {
+      log_debug("gnutls_record_recv (" << bufsize << ')');
+      ret = gnutls_record_recv(session, buffer, bufsize);
+      log_debug("gnutls_record_recv => " << ret);
+
+      // report GNUTLS_E_REHANDSHAKE as eof
+      if (ret == GNUTLS_E_REHANDSHAKE)
+        return 0;
+
+      if (ret >= 0)
+        break;
+
+      if (ret == GNUTLS_E_AGAIN)
+        throw cxxtools::IOTimeout();
+
+      if (ret < 0 && ret != GNUTLS_E_INTERRUPTED)
         throw GnuTlsException("gnutls_record_recv", ret);
-    }
-    else
-    {
-      // non-blocking/with timeout
-
-      while (true)
-      {
-        log_debug("gnutls_record_recv (" << bufsize << ')');
-        ret = gnutls_record_recv(session, buffer, bufsize);
-        log_debug("gnutls_record_recv => " << ret);
-
-        // report GNUTLS_E_REHANDSHAKE as eof
-        if (ret == GNUTLS_E_REHANDSHAKE)
-          return 0;
-
-        if (ret >= 0)
-          break;
-
-        if (ret == GNUTLS_E_AGAIN)
-          throw cxxtools::IOTimeout();
-
-        if (ret < 0 && ret != GNUTLS_E_INTERRUPTED)
-          throw GnuTlsException("gnutls_record_recv", ret);
-      }
-    }
+  }
 
     return ret;
   }

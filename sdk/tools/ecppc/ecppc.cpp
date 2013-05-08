@@ -38,7 +38,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include "config.h"
-#include <cxxtools/loginit.h>
 #include <cxxtools/log.h>
 
 log_define("tntnet.ecppc")
@@ -73,11 +72,28 @@ namespace tnt
       disableLinenumbers = cxxtools::Arg<bool>(argc, argv, 'L');
       logCategory = cxxtools::Arg<std::string>(argc, argv, 'l');
 
-      if (argc < 2 || argv[1][0] == '-')
-        throw Usage(argv[0]);
-      inputfile = argv[1];
       if (multibinary)
       {
+        cxxtools::Arg<const char*> ifiles(argc, argv, 'i');
+        if (ifiles.isSet())
+        {
+          std::ifstream in(ifiles.getValue());
+          std::string ifile;
+          while (std::getline(in, ifile))
+          {
+            std::string key = ifile;
+            if (!keepPath)
+            {
+              // strip path
+              std::string::size_type p;
+              if ((p = key.find_last_of('/')) != std::string::npos)
+                key.erase(0, p + 1);
+            }
+
+            inputfiles.insert(inputfiles_type::value_type(key, ifile));
+          }
+        }
+
         for (int a = 1; a < argc; ++a)
         {
           std::string ifile = argv[a];
@@ -92,6 +108,12 @@ namespace tnt
 
           inputfiles.insert(inputfiles_type::value_type(key, ifile));
         }
+      }
+      else
+      {
+        if (argc < 2 || argv[1][0] == '-')
+          throw Usage(argv[0]);
+        inputfile = argv[1];
       }
     }
 
@@ -257,7 +279,11 @@ namespace tnt
             generator.setLastModifiedTime(st.st_ctime);
         }
         else
-          runParser(in, generator);
+        {
+          bool success = runParser(in, generator, true);
+          if (!success)
+            return 1;
+        }
       }
 
       //
@@ -286,7 +312,7 @@ namespace tnt
         throw std::runtime_error(std::string("can't read ") + inputfile);
 
       if (!binary)
-        runParser(in, generator);
+        runParser(in, generator, false);
 
       if (ofile.empty())
         generator.getDependencies(std::cout);
@@ -299,7 +325,7 @@ namespace tnt
       return 0;
     }
 
-    void Ecppc::runParser(std::istream& in, tnt::ecpp::ParseHandler& handler)
+    bool Ecppc::runParser(std::istream& in, tnt::ecpp::ParseHandler& handler, bool continueOnError)
     {
       // create parser
       tnt::ecpp::Parser parser(handler, inputfile);
@@ -310,7 +336,24 @@ namespace tnt
         parser.addInclude(*it);
 
       // call parser
-      parser.parse(in);
+      bool success = true;
+      while (in)
+      {
+        try
+        {
+          parser.parse(in);
+        }
+        catch (const std::exception& e)
+        {
+          if (!continueOnError)
+            throw;
+
+          success = false;
+          std::cerr << e.what() << std::endl;
+        }
+      }
+
+      return success;
     }
 
     Usage::Usage(const char* progname)
@@ -326,6 +369,7 @@ namespace tnt
            "  --mimetypes file read mimetypes from file (default /etc/mime.types)\n"
            "  -b               binary\n"
            "  -bb              generate multibinary component\n"
+           "  -i filename      read filenames for multibinary component from specified file\n"
            "  -z               compress constant data\n"
            "  -v               verbose\n"
            "  -M               generate dependency for Makefile\n"

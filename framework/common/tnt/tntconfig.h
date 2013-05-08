@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2003-2005 Tommi Maekitalo
+ * Copyright (C) 2012 Tommi Maekitalo
  * 
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -26,116 +26,105 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
-
 #ifndef TNT_TNTCONFIG_H
 #define TNT_TNTCONFIG_H
 
 #include <string>
 #include <vector>
-#include <iostream>
-#include <sstream>
+#include <map>
+#include <cxxtools/serializationinfo.h>
 
 namespace tnt
 {
-  class ConfigParser
+  static const int SSL_ALL = 0;
+  static const int SSL_NO  = 1;
+  static const int SSL_YES = 2;
+
+  struct TntConfig
   {
-    public:
-      typedef std::vector<std::string> params_type;
 
-      enum state_type {
-        state_start,
-        state_cmd,
-        state_args,
-        state_args_esc,
-        state_token,
-        state_qstring,
-        state_qstring_esc,
-        state_comment };
+    struct Mapping
+    {
+      std::string target;
+      std::string url;
+      std::string vhost;
+      std::string method;
+      std::string pathinfo;
+      int ssl;
 
-    private:
-      std::string current_cmd;
-      params_type current_params;
-      std::string current_token;
+      typedef std::map<std::string, std::string> ArgsType;
 
-    protected:
-      state_type state;
-      virtual void onLine(const std::string& key, const params_type& value) = 0;
+      ArgsType args;
+    };
 
-    public:
-      ConfigParser()
-        : state(state_start)
-        { }
-      virtual ~ConfigParser()
-        { }
+    struct Listener
+    {
+      std::string ip;
+      unsigned short port;
+    };
 
-      void parse(char ch);
+    struct SslListener : public Listener
+    {
+      std::string certificate;
+      std::string key;
+    };
+
+    typedef std::vector<Mapping> MappingsType;
+    typedef std::vector<Listener> ListenersType;
+    typedef std::vector<SslListener> SslListenersType;
+    typedef std::vector<std::string> CompPathType;
+    typedef std::map<std::string, std::string> EnvironmentType;
+
+    MappingsType mappings;
+    ListenersType listeners;
+    SslListenersType ssllisteners;
+    unsigned maxRequestSize;
+    unsigned maxRequestTime;
+    std::string user;
+    std::string group;
+    std::string dir;
+    std::string chrootdir;
+    std::string pidfile;
+    bool daemon;
+    unsigned minThreads;
+    unsigned maxThreads;
+    unsigned long threadStartDelay;
+    unsigned queueSize;
+    CompPathType compPath;
+    unsigned socketBufferSize;
+    unsigned socketReadTimeout;
+    unsigned socketWriteTimeout;
+    unsigned keepAliveTimeout;
+    unsigned keepAliveMax;
+    unsigned sessionTimeout;
+    unsigned listenBacklog;
+    unsigned listenRetry;
+    bool enableCompression;
+    unsigned minCompressSize;
+    std::string mimeDb;
+    unsigned maxUrlMapCache;
+    std::string defaultContentType;
+    std::string accessLog;
+    std::string errorLog;
+    unsigned backgroundTasks;
+    unsigned timerSleep;
+    cxxtools::SerializationInfo config;
+    EnvironmentType environment;
+    std::string documentRoot;
+    std::vector<std::string> includes;
+
+    TntConfig();
+
+    bool hasValue(const std::string& key) const
+    { return config.findMember(key) != 0; }
+
+    static TntConfig& it();
   };
 
-  class Tntconfig
-  {
-    public:
-      typedef ConfigParser::params_type params_type;
-      typedef std::string name_type;
-      struct config_entry_type {
-          name_type key;
-          params_type params;
-        };
-      typedef std::vector<config_entry_type> config_entries_type;
-
-    private:
-      config_entries_type config_entries;
-
-    public:
-      Tntconfig()
-      { }
-      void load(const char* configfile);
-      void load(std::istream& in);
-
-      const config_entries_type& getConfigValues() const
-      { return config_entries; }
-
-      void setConfigValue(const std::string& key, const params_type& value);
-      void setConfigValue(const std::string& key, const std::string& value)
-      {
-        params_type params;
-        params.push_back(value);
-        setConfigValue(key, params);
-      }
-
-      params_type getConfigValue(
-           const std::string& key,
-           const params_type& def = params_type()) const;
-
-      void getConfigValues(
-           const std::string& key,
-           config_entries_type& ret) const;
-
-      std::string getValue(
-           const std::string& key,
-           const std::string& def = std::string()) const;
-      template <typename T>
-        T getValue(const std::string& key, const T& def) const
-        {
-          T ret;
-          std::istringstream v(getValue(key));
-          return (v >> ret) ? ret : def;
-        }
-      bool getBoolValue(const std::string& key, bool def) const
-        {
-          std::string v = getValue(key);
-          if (v.empty())
-            return def;
-          char ch = v.at(0);
-          return ch == '1' || ch == 't' || ch == 'T' || ch == 'y' || ch == 'Y';
-        }
-
-      std::string getValue(const std::string& key, const char* def) const
-      {
-        return getValue(key, std::string(def));
-      }
-
-      bool hasValue(const std::string& key) const;
-  };
+  void operator>>= (const cxxtools::SerializationInfo& si, TntConfig::Mapping& mapping);
+  void operator>>= (const cxxtools::SerializationInfo& si, TntConfig::Listener& listener);
+  void operator>>= (const cxxtools::SerializationInfo& si, TntConfig::SslListener& ssllistener);
+  void operator>>= (const cxxtools::SerializationInfo& si, TntConfig& config);
 }
 
 #endif // TNT_TNTCONFIG_H

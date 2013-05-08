@@ -1,6 +1,7 @@
 ACLOCAL_AMFLAGS = -I m4
 
 bin_SCRIPTS = tntnet-config
+pkgdata_SCRIPTS = tntnet-conf2xml.pl
 
 tntnet-config: tntnet-config.in
 
@@ -9,11 +10,6 @@ SERVERDIRS = \
     framework/runtime \
     framework/defcomp \
     etc
-endif
-
-if MAKE_CGI
-CGIDIRS = \
-    framework/cgi
 endif
 
 if MAKE_SDK
@@ -54,22 +50,19 @@ endif
 SUBDIRS = \
     framework/common \
     doc/man \
-    $(UNITTESTDIR) \
     $(SERVERDIRS) \
     $(CGIDIRS) \
     $(SDKDIRS) \
-    $(DEMOSDIRS)
+    $(DEMOSDIRS) \
+    $(UNITTESTDIR)
 
 EXTRA_DIST = ecpp.vim \
     doc/tntnet.pdf \
     doc/tntnet.odt \
-    doc/tntnet-configuration.pdf \
-    doc/tntnet-configuration.odt \
     doc/logo-tntnet.cdr \
     doc/tntnet.svg \
     doc/tntnet-dynamite.svg \
-    doc/quick-start-guide.odt \
-    doc/quick-start-guide.pdf \
+    doc/quick-start-guide.markdown \
     COPYING \
     sdk/demos/newsdb/Makefile \
     sdk/demos/newsdb/README \
@@ -79,6 +72,10 @@ EXTRA_DIST = ecpp.vim \
     sdk/demos/newsdb/newscss.css \
     sdk/demos/newsdb/newsdata.sh \
     sdk/demos/newsdb/newsdb.sql \
-    sdk/demos/newsdb/tntnet.conf \
-    sdk/demos/newsdb/tntnet.properties \
-    m4/acx_pthread.m4
+    sdk/demos/newsdb/tntnet.xml \
+    m4/acx_pthread.m4 \
+    m4/ax_check_compile_flag.m4 \
+    m4/ax_compiler_vendor.m4 \
+    m4/pkg.m4 \
+    Releasenotes-2.2.markdown  \
+    $(pkgdata_SCRIPTS)

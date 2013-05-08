@@ -28,6 +28,7 @@
 
 
 #include "tnt/process.h"
+#include "tnt/tntconfig.h"
 #include <cxxtools/systemerror.h>
 #include <cxxtools/posix/fork.h>
 #include <pwd.h>
@@ -44,14 +45,14 @@ namespace
 {
   tnt::Process* theProcess = 0;
 
-  void sigEnd(int)
+  extern "C" void sigEnd(int)
   {
     signal(SIGTERM, sigEnd);
     if (theProcess)
       theProcess->shutdown();
   }
 
-  void sigReload(int)
+  extern "C" void sigReload(int)
   {
     signal(SIGHUP, sigReload);
     if (theProcess)
@@ -133,10 +134,12 @@ namespace
     }
 
     std::ofstream pidfile(pidFileName.c_str());
-    if (!pidfile)
+    if (pidfile.fail())
       throw std::runtime_error("unable to open pid-file " + pidFileName);
+
     pidfile << pid;
-    if (!pidfile)
+
+    if (pidfile.fail())
       throw std::runtime_error("error writing to pid-file " + pidFileName);
   }
 
@@ -146,7 +149,7 @@ namespace
       ::unlink(pidFileName.c_str());
   }
 
-  void closeStdHandles(const std::string& errorLog)
+  void closeStdHandles(const std::string& errorLog = std::string())
   {
     if (::freopen("/dev/null", "r", stdin) == 0)
       throw cxxtools::SystemError("freopen(stdin)");
@@ -154,16 +157,18 @@ namespace
     if (::freopen("/dev/null", "w", stdout) == 0)
       throw cxxtools::SystemError("freopen(stdout)");
 
-    if (::freopen(errorLog.empty() ? "/dev/null" : errorLog.c_str(), "w", stderr) == 0)
-      throw cxxtools::SystemError("freopen(stderr)");
+    if (!errorLog.empty())
+    {
+      if (::freopen(errorLog.c_str(), "a+", stderr) == 0)
+        throw cxxtools::SystemError("freopen(stderr)");
+    }
   }
 
 }
 
 namespace tnt
 {
-  Process::Process(bool daemon_)
-    : daemon(daemon_)
+  Process::Process()
   {
     theProcess = this;
   }
@@ -207,7 +212,7 @@ namespace tnt
         }
 
         log_debug("close standard-handles");
-        closeStdHandles(errorLog);
+        closeStdHandles(tnt::TntConfig::it().errorLog);
 
         exitRestart = false;
         log_debug("do work");
@@ -219,20 +224,27 @@ namespace tnt
         else
         {
           log_debug("signal shutdown");
-          monitorPipe.write('s');
+          try
+          {
+            monitorPipe.write('s');
+          }
+          catch (const std::exception& e)
+          {
+            log_debug("ingore exception from monitor pipe: " << e.what());
+          }
         }
         return;
       }
 
       // monitor-process
 
-      log_debug("write pid " << fork.getPid() << " to \"" << pidfile << '"');
-      PidFile p(pidfile, fork.getPid());
+      log_debug("write pid " << fork.getPid() << " to \"" << tnt::TntConfig::it().pidfile << '"');
+      PidFile p(tnt::TntConfig::it().pidfile, fork.getPid());
 
       if (first)
       {
         log_debug("close standard-handles");
-        closeStdHandles(errorLog);
+        closeStdHandles();
         first = false;
       }
 
@@ -268,28 +280,28 @@ namespace tnt
     log_debug("onInit");
     onInit();
 
-    if (!group.empty())
+    if (!tnt::TntConfig::it().group.empty())
     {
-      log_debug("set group to \"" << group << '"');
-      ::setGroup(group);
+      log_debug("set group to \"" << tnt::TntConfig::it().group << '"');
+      ::setGroup(tnt::TntConfig::it().group);
     }
 
-    if (!user.empty())
+    if (!tnt::TntConfig::it().user.empty())
     {
-      log_debug("set user to \"" << user << '"');
-      ::setUser(user);
+      log_debug("set user to \"" << tnt::TntConfig::it().user << '"');
+      ::setUser(tnt::TntConfig::it().user);
     }
 
-    if (!dir.empty())
+    if (!tnt::TntConfig::it().dir.empty())
     {
-      log_debug("set dir to \"" << dir << '"');
-      ::setDir(dir);
+      log_debug("set dir to \"" << tnt::TntConfig::it().dir << '"');
+      ::setDir(tnt::TntConfig::it().dir);
     }
 
-    if (!rootdir.empty())
+    if (!tnt::TntConfig::it().chrootdir.empty())
     {
-      log_debug("change root to \"" << rootdir << '"');
-      ::setRootdir(rootdir);
+      log_debug("change root to \"" << tnt::TntConfig::it().chrootdir << '"');
+      ::setRootdir(tnt::TntConfig::it().chrootdir);
     }
 
     signal(SIGTERM, sigEnd);
@@ -299,7 +311,7 @@ namespace tnt
 
   void Process::run()
   {
-    if (daemon)
+    if (tnt::TntConfig::it().daemon)
     {
       log_debug("run daemon-mode");
 
